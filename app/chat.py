@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, AsyncIterator, Final, Literal
+import inspect
+from typing import Annotated, Any, AsyncIterator
 
-from agents import Agent, RunConfig, Runner
-from agents.model_settings import ModelSettings
-from chatkit.agents import AgentContext, ClientToolCall, ThreadItemConverter, stream_agent_response
-from chatkit.server import ChatKitServer, StreamingResult
-from chatkit.types import ThreadMetadata, ThreadStreamEvent, UserMessageItem, ClientToolCallItem
-from .memory_store import MemoryStore
+from agents import Agent, Runner
+from chatkit.agents import AgentContext, ThreadItemConverter, stream_agent_response
+from chatkit.server import ChatKitServer
+from chatkit.types import (
+    Attachment,
+    ClientToolCallItem,
+    ThreadItem,
+    ThreadMetadata,
+    ThreadStreamEvent,
+    UserMessageItem,
+)
 from openai.types.responses import ResponseInputContentParam
-
+from pydantic import ConfigDict, Field
 
 from .constants import MERAK_AGENT_INSTRUCTIONS, MODEL
+from .memory_store import MemoryStore
 from .merak_agent_tool import search_agents_tool
 
 
@@ -37,33 +44,35 @@ def _user_message_text(item: UserMessageItem) -> str:
 
 
 class MerakAgentServer(ChatKitServer):
-    """ChatKit server wired up with the search tool."""
+    """ChatKit server wired up with the Merak search tool."""
+
     def __init__(self) -> None:
         self.store: MemoryStore = MemoryStore()
         super().__init__(self.store)
-        tools = [save_fact, switch_theme, get_weather]
         self.assistant = Agent[MerakAgentContext](
             model=MODEL,
-            name="ChatKit Guide",
+            name="Merak Agent",
             instructions=MERAK_AGENT_INSTRUCTIONS,
-            tools=tools,  # type: ignore[arg-type]
+            tools=[search_agents_tool],
         )
-    
+        self._thread_item_converter = self._init_thread_item_converter()
+
     async def respond(
         self,
         thread: ThreadMetadata,
         input: UserMessageItem | None,
         context: Any,
     ) -> AsyncIterator[ThreadStreamEvent]:
-        context = MerakAgentContext(
+        request_context = context if isinstance(context, dict) else {}
+        agent_context = MerakAgentContext(
             thread=thread,
             store=self.store,
-            request_context=context,
+            request_context=request_context,
         )
 
-        target_item: ThreadItem | None = item
+        target_item: ThreadItem | None = input
         if target_item is None:
-            target_item = await self._latest_thread_item(thread, context)
+            target_item = await self._latest_thread_item(thread, request_context)
 
         if target_item is None or _is_tool_completion_item(target_item):
             return
@@ -75,9 +84,9 @@ class MerakAgentServer(ChatKitServer):
         result = Runner.run_streamed(
             self.assistant,
             agent_input,
-            context=context,
+            context=agent_context,
         )
-        async for event in stream_agent_response(context, result):
+        async for event in stream_agent_response(agent_context, result):
             yield event
         return
 
