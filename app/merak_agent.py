@@ -1,7 +1,8 @@
+import json
 from typing import Any
 from pydantic import BaseModel, Field
 from openai import OpenAI
-from agents import RunContextWrapper, FunctionTool, Agent
+from agents import RunContextWrapper, FunctionTool, Agent, ToolOutputText
 from chatkit.agents import AgentContext
 
 from app.core.settings import settings
@@ -85,7 +86,7 @@ def build_attribute_filter(
     if max_rate is not None:
         filters.append({
             "type": "lte",
-            "key": "hourly_rate",
+            "key": "base_rate",
             "value": max_rate
         })
     
@@ -120,7 +121,7 @@ def build_attribute_filter(
     }
 
 
-async def search_agents(ctx: RunContextWrapper[Any], args: str) -> dict:
+async def search_agents(ctx: RunContextWrapper[Any], args: str) -> ToolOutputText:
     parsed = FunctionArgs.model_validate_json(args)
     
     attribute_filter = build_attribute_filter(
@@ -130,15 +131,15 @@ async def search_agents(ctx: RunContextWrapper[Any], args: str) -> dict:
         min_success_rate=parsed.min_success_rate,
         availability=parsed.availability,
     )
-    
+
     results = client.vector_stores.search(
         vector_store_id=settings.vector_store_id,
         query=parsed.query,
         max_num_results=parsed.max_results,
-        attribute_filter=attribute_filter,
+        filters=attribute_filter,
     )
     
-    return {
+    tool_payload = {
         "total_results": len(results.data),
         "agents": [
             {
@@ -151,6 +152,8 @@ async def search_agents(ctx: RunContextWrapper[Any], args: str) -> dict:
             for result in results.data
         ]
     }
+    
+    return ToolOutputText(text=json.dumps(tool_payload))
 
 
 search_agents_tool = FunctionTool(
@@ -161,8 +164,8 @@ search_agents_tool = FunctionTool(
 )
 
 merak_agent = Agent[AgentContext](
-    model="gpt-5-mini",
+    model="gpt-4.1-mini",
     name="Merak Agent",
     instructions=MERAK_AGENT_INSTRUCTIONS,
-    tools=[search_agents],
+    tools=[search_agents_tool],
 )
