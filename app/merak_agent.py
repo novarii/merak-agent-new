@@ -1,13 +1,14 @@
 from typing import Any
 from pydantic import BaseModel, Field
 from openai import OpenAI
-from agents import RunContextWrapper, FunctionTool
+from agents import RunContextWrapper, FunctionTool, Agent
+from chatkit.agents import AgentContext
 
 from app.core.settings import settings
 client = OpenAI(api_key=settings.openai_api_key)
 
 
-MERAK_AGENT_INSTRUCTIONS = KNOWLEDGE_ASSISTANT_INSTRUCTIONS = """
+MERAK_AGENT_INSTRUCTIONS = """
     You are Merak, the hiring orchestrator for the Merak Agent platform. Your job is to
     gather a complete, structured brief and then call the `search_agents` tool exactly once
     to retrieve matching agents. Follow this workflow:
@@ -157,4 +158,11 @@ search_agents_tool = FunctionTool(
     description="Search for agents that match the user's requirements based on various facets like industry, agent type, rate, success rate, and availability.",
     params_json_schema=FunctionArgs.model_json_schema(),
     on_invoke_tool=search_agents,
+)
+
+merak_agent = Agent[AgentContext](
+    model="gpt-5-mini",
+    name="Merak Agent",
+    instructions=MERAK_AGENT_INSTRUCTIONS,
+    tools=[search_agents],
 )
