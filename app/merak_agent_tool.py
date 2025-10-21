@@ -9,8 +9,6 @@ from app.constants import MERAK_AGENT_INSTRUCTIONS
 from app.core.settings import settings
 client = OpenAI(api_key=settings.openai_api_key)
 
-
-
 class FunctionArgs(BaseModel):
     query: str = Field(description="A short semantic search query that captures the user's need.")
     industries: list[str] | None = Field(description="A list of primary industries relevant to the search.")
