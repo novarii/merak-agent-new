@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 from typing import Annotated, Any, AsyncIterator
 
 from agents import Agent, Runner
@@ -10,6 +9,7 @@ from chatkit.agents import AgentContext, ThreadItemConverter, stream_agent_respo
 from chatkit.server import ChatKitServer
 from chatkit.types import (
     Attachment,
+    AssistantMessageItem,
     ClientToolCallItem,
     ThreadItem,
     ThreadMetadata,
@@ -61,7 +61,7 @@ class MerakAgentServer(ChatKitServer):
         self,
         thread: ThreadMetadata,
         input: UserMessageItem | None,
-        context: Any,
+        context: dict[str, Any],
     ) -> AsyncIterator[ThreadStreamEvent]:
         request_context = context if isinstance(context, dict) else {}
         agent_context = MerakAgentContext(
@@ -75,9 +75,11 @@ class MerakAgentServer(ChatKitServer):
             target_item = await self._latest_thread_item(thread, request_context)
 
         if target_item is None or _is_tool_completion_item(target_item):
+            print("Tool completion or no valid item found; skipping response.")
+            print(target_item)
             return
 
-        agent_input = await self._to_agent_input(thread, target_item)
+        agent_input = await self._to_agent_input(thread, target_item, request_context)
         if agent_input is None:
             return
 
@@ -125,52 +127,59 @@ class MerakAgentServer(ChatKitServer):
         self,
         thread: ThreadMetadata,
         item: ThreadItem,
+        context: dict[str, Any],
     ) -> Any | None:
         if _is_tool_completion_item(item):
             return None
 
         converter = getattr(self, "_thread_item_converter", None)
-        if converter is not None:
-            for attr in (
-                "to_input_item",
-                "convert",
-                "convert_item",
-                "convert_thread_item",
-            ):
-                method = getattr(converter, attr, None)
-                if method is None:
-                    continue
-                call_args: list[Any] = [item]
-                call_kwargs: dict[str, Any] = {}
+
+        history: list[ThreadItem] = []
+        try:
+            loaded = await self.store.load_thread_items(
+                thread.id,
+                after=None,
+                limit=50,
+                order="desc",
+                context=context,
+            )
+            history = list(reversed(loaded.data))
+        except Exception:  # noqa: BLE001
+            history = []
+
+        latest_id = getattr(item, "id", None)
+        if latest_id is None or not any(
+            getattr(existing, "id", None) == latest_id for existing in history
+        ):
+            history.append(item)
+
+        relevant: list[ThreadItem] = [
+            entry
+            for entry in history
+            if isinstance(
+                entry,
+                (
+                    UserMessageItem,
+                    AssistantMessageItem,
+                    ClientToolCallItem,
+                ),
+            )
+        ]
+
+        if len(relevant) > 12:
+            relevant = relevant[-12:]
+
+        if converter is not None and relevant:
+            to_agent = getattr(converter, "to_agent_input", None)
+            if callable(to_agent):
                 try:
-                    signature = inspect.signature(method)
-                except (TypeError, ValueError):
-                    signature = None
+                    return await to_agent(relevant)
+                except TypeError:
+                    pass
 
-                if signature is not None:
-                    params = [
-                        parameter
-                        for parameter in signature.parameters.values()
-                        if parameter.kind
-                        not in (
-                            inspect.Parameter.VAR_POSITIONAL,
-                            inspect.Parameter.VAR_KEYWORD,
-                        )
-                    ]
-                    if len(params) >= 2:
-                        next_param = params[1]
-                        if next_param.kind in (
-                            inspect.Parameter.POSITIONAL_ONLY,
-                            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                        ):
-                            call_args.append(thread)
-                        else:
-                            call_kwargs[next_param.name] = thread
-
-                result = method(*call_args, **call_kwargs)
-                if inspect.isawaitable(result):
-                    return await result
-                return result
+        for entry in reversed(relevant):
+            if isinstance(entry, UserMessageItem):
+                return _user_message_text(entry)
 
         if isinstance(item, UserMessageItem):
             return _user_message_text(item)
