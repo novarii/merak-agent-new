@@ -18,27 +18,28 @@
 
 ## Implementation Plan
 0. **Clarify integration boundary**
-   - Note in the task description and linked docs that the Chat experience spans the FastAPI backend (merak-agent search + streaming) and the full-stack Next.js server, which proxies ChatKit traffic and will fan out Supabase profile fetches.
-   - Confirm the Next runtime (Edge vs. Node) so server-side Supabase queries can run where the FastAPI IDs land.
-1. **Augment tool payload (FastAPI)**
-   - In `app/merak_agent_tool.py`, call `extract_agent_ids(results)` right after the vector search.
-   - Add the list to the JSON payload, e.g. `tool_payload["agent_ids"] = agent_ids`.
-2. **Define streaming contract**
-   - Document in `.agent/System` how tool responses now include an `agent_ids` array.
-   - (Optional) add a short integration note in the Next repo’s docs so FE developers know to expect the field.
-3. **Next.js SSE buffering**
-   - Update the ChatKit stream handler so tool output is buffered until the `output_text.completed` event arrives; only then `JSON.parse` the text.
-   - Store the parsed payload in component state, exposing both the summary and `agent_ids`.
-   - Guard against duplicate IDs via `new Set(agentIds)` before triggering downstream fetches.
-4. **Supabase lookup API**
-   - Implement `app/api/agents/route.ts` (or extend existing route) that accepts `{ agentIds: string[] }`.
-   - Use the Supabase server client with `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` loaded from env (update `.env.local` / `.env.example`).
-   - Query `agent_profiles` with `.in("agent_id", agentIds)` and return normalized JSON `{ profiles }`.
-   - Add unit/integration tests if the FE repo uses Jest/Playwright; otherwise smoke-test manually.
-5. **Client-side rendering**
-   - When the agent IDs state changes, fire a `fetch("/api/agents", { method: "POST", body: JSON.stringify({ agentIds }) })`.
-   - Show a “Loading profiles…” placeholder while awaiting the response, then render cards with headline fields (photo, role, rate, success rate, availability, industry tags).
-   - Ensure the UI updates incrementally: if a new search happens, clear stale profiles before showing the next set.
+   - Note in the task description and linked docs that the Chat experience spans the FastAPI backend (Merak agent search + streaming) and the full-stack Next.js server, which proxies ChatKit traffic and executes client-tool callbacks.
+   - Confirm the Next runtime (Edge vs. Node) so server-side Supabase queries can run where client-tool calls are handled.
+1. **Emit client tool call (FastAPI)**
+   - In `app/merak_agent_tool.py`, after `vector_stores.search`, gather IDs with the existing `extract_agent_ids`.
+   - Introduce a helper (e.g., `dispatch_agent_profiles`) that sets `ctx.context.client_tool_call = ClientToolCall(name="display_agent_profiles", arguments={"agent_ids": agent_ids})`.
+   - Register this helper in the Merak agent definition and set `tool_use_behavior=StopAtTools(stop_at_tool_names=["display_agent_profiles"])` so ChatKit pauses until the client acknowledges the tool.
+   - Maintain the textual summary output for the LLM response, but rely on the client tool to deliver IDs to the front end.
+   - Add backend coverage ensuring a tool invocation populates `client_tool_call`.
+2. **Document client-tool contract**
+   - Update `.agent/System/project_architecture.md` (or equivalent) to capture the new call flow: FastAPI triggers `display_agent_profiles` → Next.js handler fetches Supabase → UI updates.
+   - Cross-link any Next.js documentation so the FE team knows the tool name, payload shape, and stop-at behavior.
+3. **Next.js client tool handler**
+   - In `src/components/ChatKitPanel.tsx`, keep the two-column layout but wire `useChatKit` with `onClientTool` (or `clientTools` once available) so `display_agent_profiles` invokes the `useAgentProfiles().loadProfiles` hook.
+   - Ensure the handler returns the hook’s `{ success, count, error }` object so ChatKit resumes streaming only after the Supabase fetch/state update resolves.
+   - Reset agent profiles when threads change (`onThreadChange` already clears state in your hook).
+4. **Supabase lookup API (Next.js server)**
+   - Implement or refine `app/api/agents/route.ts` to accept `{ agentIds }`, validate input, and query Supabase with `.in("agent_id", agentIds)`.
+   - Load `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` from environment; update `.env.local` / `.env.example`.
+   - Shape the response so `useAgentProfiles` can map directly to UI props; add lightweight tests if feasible.
+5. **Profile column rendering**
+   - Replace the placeholder panel on the right column (`app/page.tsx`) with a component that consumes `useAgentProfiles` state (loading, error, profiles) and renders cards with key fields (name, role, rate, availability, industry tags).
+   - Show skeleton/loading states while `loadProfiles` runs; clear profiles between searches to avoid stale data.
 6. **Error handling & telemetry**
    - Handle Supabase/API failures gracefully (show a brief inline message while keeping the chat stream alive).
    - Optionally log Supabase errors to the browser console in dev and to an observability hook in prod.
@@ -48,11 +49,11 @@
    - Prepare a short Loom or screenshot walkthrough if that’s part of team rollout norms.
 
 ## Acceptance Criteria
-- Tool payload includes an `agent_ids` array populated from search results.
-- Next.js client consumes the stream, extracts IDs after tool completion, and hydrates Supabase profiles without blocking other stream events.
+- FastAPI sets `ctx.context.client_tool_call` with `name="display_agent_profiles"` and the expected `agent_ids` payload whenever the search tool runs.
+- Next.js ChatKit client handles that client tool, triggers Supabase fetching via `useAgentProfiles`, and resumes streaming once the handler resolves.
 - Supabase service keys remain server-side; no secrets leak to the browser or repo.
 - UI displays the corresponding profiles within the same chat session and handles empty/error states gracefully.
-- All existing tests pass; new coverage added where logic changed (tool payload, API route, FE handler).
+- All existing tests pass; new coverage added where logic changed (client tool emission, API route, FE hook/component).
 
 ## Related Docs
 - `.agent/System/project_architecture.md` — Source of truth for backend/FE data flow (update with new stream field).

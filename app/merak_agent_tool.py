@@ -112,6 +112,12 @@ async def search_agents(ctx: RunContextWrapper[Any], args: str) -> ToolOutputTex
         max_num_results=parsed.max_results,
         filters=attribute_filter,
     )
+
+    agent_ids = extract_agent_ids(results)
+    ctx.context.client_tool_call = ClientToolCall(
+        name="display_agent_profiles",
+        arguments={"agent_ids": agent_ids}
+    )
     
     tool_payload = {
         "total_results": len(results.data),
