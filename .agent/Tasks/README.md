@@ -3,6 +3,7 @@
 This workspace tracks PRDs and implementation plans for active features. Current briefs:
 
 - `feat-nextjs-chatkit-frontend.md` — Next.js + ChatKit frontend integrating with the Merak Agents SDK backend.
+- `task-stream-agent-profiles-display.md` — Stream agent IDs to the Next.js client and hydrate profiles from Supabase during conversations.
 
 ## How to Contribute
 1. Create a new markdown file in this directory (e.g., `feat-vector-ranking.md`).

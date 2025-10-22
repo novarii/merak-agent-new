@@ -8,7 +8,7 @@
 ## High-Level Architecture
 1. **Context Layer:** Provide a `MerakAgentContext` that extends `chatkit.agents.AgentContext`, injecting the in-memory store and any request-scoped metadata (authentication, analytics hooks, etc.).
 2. **ChatKit Server:** Subclass `ChatKitServer` to stream agent responses, persist thread items via `MemoryStore`.
-3. **FastAPI Integration:** Expose the ChatKit server via ASGI route (`POST /chatkit/process`) so the frontend can communicate using ChatKit’s protocol.
+3. **FastAPI Integration:** Expose the ChatKit server via ASGI route (`POST /chatkit`) so the frontend can communicate using ChatKit’s protocol.
 4. **Configuration:** Reuse `app/core/settings.py` for API keys and vector store IDs. Ensure `.env.example` is updated if new secrets are required (none expected beyond existing OpenAI credentials).
 
 ## Detailed Implementation Steps
@@ -29,14 +29,8 @@ class MerakAgentContext(AgentContext):
 ```
 
 ### 2. Implement Thread Item Conversion
-- **Source of truth:** `chatkit.agents.ThreadItemConverter` mirrors what we saw in the sample Fact server. Using it prevents duplicating logic for translating ChatKit thread history into agent inputs.
-- **Plan:** initialize a converter in the server’s constructor and add a helper that uses any of the exposed `convert_*` methods (similar to the sample). If the converter signature changes across library versions, catch `TypeError` and fall back gracefully.
-
-```python
-self._thread_item_converter = ThreadItemConverter(
-    to_message_content=self.to_message_content  # raises RuntimeError today because Merak does not support attachments
-)
-```
+- **Source of truth:** `chatkit.agents.ThreadItemConverter` already knows how to translate thread items into Agents SDK inputs when given recent history.
+- **Plan:** initialize the converter in the server constructor and, inside `_to_agent_input`, load the last ~50 thread items, filter to user/assistant/tool messages, and hand that list to `converter.to_agent_input(relevant_items)`. If conversion fails, fall back to `_user_message_text` for the newest user message.
 
 ### 3. Stream Agent Responses Via Runner
 - **Reference:** `Runner.run_streamed(self.assistant, agent_input, context=agent_context)` from the sample fact server. `self.assistant` should point to `merak_agent`.
@@ -81,11 +75,15 @@ from fastapi import APIRouter, Request
 router = APIRouter()
 server = MerakAgentServer(agent=merak_agent)
 
-@router.post("/chatkit/process")
-async def process(req: Request) -> StreamingResponse:
+@router.post("/chatkit")
+async def process(req: Request) -> Response:
     body = await req.body()
     result = await server.process(body, context={})
-    return result.to_response()
+    if isinstance(result, StreamingResult):
+        return StreamingResponse(result, media_type="text/event-stream")
+    if isinstance(result, NonStreamingResult):
+        return Response(content=result.json, media_type="application/json")
+    raise HTTPException(status_code=500, detail=f"Unexpected result type: {type(result).__name__}")
 ```
 
 - **Resolved detail:** In `openai-chatkit==1.0.2`, `ChatKitServer.process` returns either `StreamingResult` (an `AsyncIterable[bytes]`) or `NonStreamingResult` (wrapping raw `bytes`). Neither exposes `to_response()`, so the FastAPI route should detect the return type and wrap it manually: `StreamingResponse(result, media_type="text/event-stream")` for streaming, `Response(content=result.json, media_type="application/json")` otherwise.
@@ -93,7 +91,12 @@ async def process(req: Request) -> StreamingResponse:
 ## 7. Documentation Touchpoint
 - Add a brief note in `.agent/README.md` once the prototype is ready, so other contributors know where to find the plan.
 
-## Open Questions / Ambiguities (RESOLVED)
-- Input conversion path: `app/main.py` still references `ThreadMetadata`, `UserMessageItem`, and a missing `simple_to_agent_input`. The prototype should first attempt to initialize a `ThreadItemConverter` via `_init_thread_item_converter()` and use a defensive `_to_agent_input` helper that probes common method names (`to_input_item`, `convert`, `convert_item`, `convert_thread_item`). If no converter is available—or it lacks those methods—we fall back to `_user_message_text(item)` to extract plain text from `UserMessageItem` instances. We need to confirm which branch works once we wire everything together.
-- Assistant handle naming: the reference docs expose an `assistant_agent` class attribute, but we’re standardizing on an instance attribute `self.assistant` set in `__init__`. Update the stub to drop `self.assistant_agent` references so `respond` always calls `Runner.run_streamed(self.assistant, ...)`.
-- File attachments are not in scope yet. The `to_message_content` method may simply raise `RuntimeError` like the sample.
+## Open Questions / Ambiguities (Resolved)
+- **Input conversion path:** Implemented by batching recent thread history and calling `ThreadItemConverter.to_agent_input`. Plain-text fallback remains for unexpected item types.
+- **Assistant handle naming:** Standardised on `self.assistant` defined in `__init__`.
+- **Attachments:** Still out of scope; `to_message_content` raises `RuntimeError` until file support is prioritised.
+
+## Related Docs
+- `.agent/System/project_architecture.md` — current architecture and request flow.
+- `.agent/SOP/chatkit_user_message_conversion.md` — operational guidance for the converter and fallbacks.
+- `.agent/Tasks/task-chatkit-route-hardening.md` — follow-up work to improve the FastAPI endpoint resilience.

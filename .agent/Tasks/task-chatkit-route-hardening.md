@@ -32,3 +32,7 @@ async def chatkit_endpoint(
 - The route distinguishes `StreamingResult` vs. `NonStreamingResult` using `isinstance` checks.
 - Any other return shape triggers an HTTP 500 with a descriptive error message.
 - Optional: add logging for the fallback branch if deeper diagnostics are needed.
+
+## Related Docs
+- `.agent/System/project_architecture.md` — runtime architecture and request flow context.
+- `chatkit_server_integration_plan.md` — broader integration plan for the ChatKit backend.

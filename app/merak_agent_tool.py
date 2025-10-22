@@ -83,6 +83,17 @@ def build_attribute_filter(
         "filters": filters
     }
 
+def extract_agent_ids(search_results: Any) -> list[str]:
+    agent_ids = []
+    
+    for result in search_results.data:
+        if hasattr(result, "attributes") and result.attributes:
+            agent_id = result.attributes.get("agent_id")
+            if agent_id:
+                agent_ids.append(agent_id)
+    
+    return agent_ids
+
 
 async def search_agents(ctx: RunContextWrapper[Any], args: str) -> ToolOutputText:
     parsed = FunctionArgs.model_validate_json(args)
