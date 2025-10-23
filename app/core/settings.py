@@ -6,6 +6,7 @@ class Settings(BaseSettings):
 
     openai_api_key: str
     vector_store_id: str
+    redis_url: str | None = None
     debug: bool = False
     log_level: str = "info"
 

@@ -29,6 +29,11 @@ def get_chatkit_server() -> MerakAgentServer:
         )
     return _chatkit_server
 
+@app.on_event("shutdown")
+async def shutdown_event() -> None:
+    if _chatkit_server is not None:
+        await _chatkit_server.aclose()
+
 @app.post("/chatkit")
 async def chatkit_endpoint(
     request: Request, server: MerakAgentServer = Depends(get_chatkit_server)

@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Any, AsyncIterator
 
 from agents import Agent, Runner
-from chatkit.agents import AgentContext, ThreadItemConverter, stream_agent_response
+from chatkit.agents import (
+    AgentContext, 
+    ThreadItemConverter, 
+    ClientToolCall, 
+    stream_agent_response
+)
 from chatkit.server import ChatKitServer
 from chatkit.types import (
     Attachment,
@@ -16,11 +22,18 @@ from chatkit.types import (
     ThreadStreamEvent,
     UserMessageItem,
 )
+from chatkit.store import Store
 from openai.types.responses import ResponseInputContentParam
 from pydantic import ConfigDict, Field
 
 from .constants import MERAK_AGENT_INSTRUCTIONS, MODEL
+from .core.settings import settings
 from .memory_store import MemoryStore
+
+try:  # pragma: no cover - optional dependency path
+    from .redis_store import RedisStore
+except ModuleNotFoundError:  # redis extra not installed
+    RedisStore = None  # type: ignore[assignment]
 from .merak_agent_tool import search_agents_tool
 
 
@@ -30,7 +43,7 @@ def _is_tool_completion_item(item: Any) -> bool:
 
 class MerakAgentContext(AgentContext):
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    store: Annotated[MemoryStore, Field(exclude=True)]
+    store: Annotated[Store[dict[str, Any]], Field(exclude=True)]
     request_context: dict[str, Any]
 
 
@@ -43,11 +56,37 @@ def _user_message_text(item: UserMessageItem) -> str:
     return " ".join(parts).strip()
 
 
+def _create_store() -> Store[dict[str, Any]]:
+    logger = logging.getLogger(__name__)
+    redis_url = settings.redis_url
+    if not redis_url:
+        return MemoryStore()
+
+    if RedisStore is None:
+        logger.warning("RedisStore module unavailable; falling back to MemoryStore.")
+        return MemoryStore()
+
+    try:
+        from redis.asyncio import Redis, from_url as redis_from_url
+    except ImportError:  # pragma: no cover - optional dependency
+        logger.warning("redis package not available; falling back to MemoryStore.")
+        return MemoryStore()
+
+    try:
+        client: Redis = redis_from_url(redis_url, decode_responses=False)
+    except Exception as exc:  # pragma: no cover - connection/config errors
+        logger.warning("Failed to initialize Redis at %s: %s", redis_url, exc)
+        return MemoryStore()
+
+    logger.info("Using Redis store at %s", redis_url)
+    return RedisStore(client)
+
+
 class MerakAgentServer(ChatKitServer):
     """ChatKit server wired up with the Merak search tool."""
 
     def __init__(self) -> None:
-        self.store: MemoryStore = MemoryStore()
+        self.store: Store[dict[str, Any]] = _create_store()
         super().__init__(self.store)
         self.assistant = Agent[MerakAgentContext](
             model=MODEL,
@@ -63,6 +102,7 @@ class MerakAgentServer(ChatKitServer):
         input: UserMessageItem | None,
         context: dict[str, Any],
     ) -> AsyncIterator[ThreadStreamEvent]:
+        print(f"[DEBUG] Thread ID at respond start: {thread.id}")
         request_context = context if isinstance(context, dict) else {}
         agent_context = MerakAgentContext(
             thread=thread,
@@ -185,6 +225,11 @@ class MerakAgentServer(ChatKitServer):
             return _user_message_text(item)
 
         return None
+
+    async def aclose(self) -> None:
+        close = getattr(self.store, "aclose", None)
+        if callable(close):
+            await close()
 
 def create_chatkit_server() -> MerakAgentServer | None:
     """Return a configured ChatKit server instance if dependencies are available."""

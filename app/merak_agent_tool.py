@@ -1,9 +1,12 @@
 import json
+import time
+
 from typing import Any
 from pydantic import BaseModel, Field
 from openai import OpenAI
 from agents import RunContextWrapper, FunctionTool, Agent, ToolOutputText
-from chatkit.agents import AgentContext
+from chatkit.agents import AgentContext, ClientToolCall, ClientToolCall
+from chatkit.types import ProgressUpdateEvent, ClientToolCallItem
 
 from app.constants import MERAK_AGENT_INSTRUCTIONS
 from app.core.settings import settings
@@ -83,6 +86,25 @@ def build_attribute_filter(
         "filters": filters
     }
 
+async def stream_search_animation(ctx: RunContextWrapper[Any], active: bool) -> None:
+    now = time.perf_counter()
+
+    if active:
+        ctx.context._search_animation_started_at = now
+        print(f"[SEARCH] animation ON @ {now:.3f}s", flush=True)
+        marker = "start"
+    else:
+        started = getattr(ctx.context, "_search_animation_started_at", None)
+        elapsed = (now - started) if started is not None else None
+        print(f"[SEARCH] animation OFF after {elapsed:.3f}s", flush=True)
+        ctx.context._search_animation_started_at = None
+        marker = "stop"
+
+    await ctx.context.stream(
+        ProgressUpdateEvent(text=f"search_animation:{marker}")
+    )
+
+
 def extract_agent_ids(search_results: Any) -> list[str]:
     agent_ids = []
     
@@ -96,6 +118,8 @@ def extract_agent_ids(search_results: Any) -> list[str]:
 
 
 async def search_agents(ctx: RunContextWrapper[Any], args: str) -> ToolOutputText:
+    await stream_search_animation(ctx, active=True)
+
     parsed = FunctionArgs.model_validate_json(args)
     
     attribute_filter = build_attribute_filter(
@@ -109,11 +133,13 @@ async def search_agents(ctx: RunContextWrapper[Any], args: str) -> ToolOutputTex
     results = client.vector_stores.search(
         vector_store_id=settings.vector_store_id,
         query=parsed.query,
-        max_num_results=parsed.max_results,
+        max_num_results=max(5, parsed.max_results),
         filters=attribute_filter,
     )
 
     agent_ids = extract_agent_ids(results)
+
+    await stream_search_animation(ctx, active=False)
     ctx.context.client_tool_call = ClientToolCall(
         name="display_agent_profiles",
         arguments={"agent_ids": agent_ids}
