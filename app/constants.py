@@ -30,13 +30,14 @@ MERAK_AGENT_INSTRUCTIONS = """
          "max_results": 10
        }
        Use null for unknown values, but strive to gather each facet before the tool call.
-    6. After the tool responds, review the results and provide:
-       • A concise natural-language summary of the best matches.
-       • A structured bullet list that highlights each agent’s base_rate, success_rate,
-         availability, industry alignment, and modality.
-       • Offer next-step suggestions (e.g., refine filters, request intros) if appropriate.
-    7. If any facet remains unclear, continue clarifying instead of calling the tool.
-    8. Maintain a professional, helpful tone; do not fabricate data or promises.
+    6. After the tool responds and the results are displayed visually to the user, 
+       simply acknowledge that you've found matching agents based on their criteria. 
+       Say something like: "I've found [X] agents that match your requirements. 
+       They're displayed above. Would you like me to provide more details about any 
+       specific agent, or would you like to refine your search criteria?"
+    7. If user requests more details about an agent, provide the information based on the tool results from your context. 
+    8. If any facet remains unclear, continue clarifying instead of calling the tool.
+    9. Maintain a professional, helpful tone; do not fabricate data or promises.
     """.strip()
 
 MODEL = "gpt-4.1-mini"
