@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from typing import Any, Iterable, List
+from urllib.parse import quote
 
 from chatkit.store import NotFoundError, Store
 from chatkit.types import Attachment, Page, Thread, ThreadItem, ThreadMetadata
@@ -10,19 +11,28 @@ from pydantic import TypeAdapter
 from redis.asyncio import Redis
 
 
-def _metadata_key(thread_id: str) -> str:
-    return f"thread:{thread_id}:metadata"
+def _escape(value: str) -> str:
+    return quote(value, safe="")
 
 
-def _items_list_key(thread_id: str) -> str:
-    return f"thread:{thread_id}:items"
+def _thread_prefix(user_id: str, thread_id: str) -> str:
+    return f"chatkit:user:{_escape(user_id)}:thread:{_escape(thread_id)}"
 
 
-def _item_key(thread_id: str, item_id: str) -> str:
-    return f"thread:{thread_id}:item:{item_id}"
+def _metadata_key(user_id: str, thread_id: str) -> str:
+    return f"{_thread_prefix(user_id, thread_id)}:metadata"
 
 
-_THREAD_INDEX_KEY = "threads:index"
+def _items_list_key(user_id: str, thread_id: str) -> str:
+    return f"{_thread_prefix(user_id, thread_id)}:items"
+
+
+def _item_key(user_id: str, thread_id: str, item_id: str) -> str:
+    return f"{_thread_prefix(user_id, thread_id)}:item:{_escape(item_id)}"
+
+
+def _thread_index_key(user_id: str) -> str:
+    return f"chatkit:user:{_escape(user_id)}:threads:index"
 
 
 class RedisStore(Store[dict[str, Any]]):
@@ -73,25 +83,34 @@ class RedisStore(Store[dict[str, Any]]):
         data = json.loads(value.decode("utf-8"))
         return _ITEM_ADAPTER.validate_python(data)
 
+    @staticmethod
+    def _require_user_id(context: dict[str, Any]) -> str:
+        user_id = context.get("user_id")
+        if not user_id:
+            raise ValueError("RedisStore requires 'user_id' in context.")
+        return str(user_id)
+
     async def load_thread(self, thread_id: str, context: dict[str, Any]) -> ThreadMetadata:
-        raw = await self._redis.get(_metadata_key(thread_id))
+        user_id = self._require_user_id(context)
+        raw = await self._redis.get(_metadata_key(user_id, thread_id))
         if raw is None:
             raise NotFoundError(f"Thread {thread_id} not found")
         metadata = self._loads_metadata(raw)
         return metadata.model_copy(deep=True)
 
     async def save_thread(self, thread: ThreadMetadata, context: dict[str, Any]) -> None:
+        user_id = self._require_user_id(context)
         metadata = self._coerce_thread_metadata(thread)
         metadata = self._ensure_created_at(metadata)
 
         encoded = self._dump_model(metadata)
-        await self._redis.set(_metadata_key(metadata.id), encoded)
+        await self._redis.set(_metadata_key(user_id, metadata.id), encoded)
 
         created_at = metadata.created_at or datetime.now(timezone.utc)
         if created_at.tzinfo is not None:
             created_at = created_at.astimezone(timezone.utc)
         score = created_at.timestamp()
-        await self._redis.zadd(_THREAD_INDEX_KEY, {metadata.id: score})
+        await self._redis.zadd(_thread_index_key(user_id), {metadata.id: score})
 
     async def load_threads(
         self,
@@ -100,7 +119,8 @@ class RedisStore(Store[dict[str, Any]]):
         order: str,
         context: dict[str, Any],
     ) -> Page[ThreadMetadata]:
-        thread_ids = await self._redis.zrange(_THREAD_INDEX_KEY, 0, -1)
+        user_id = self._require_user_id(context)
+        thread_ids = await self._redis.zrange(_thread_index_key(user_id), 0, -1)
         sequence: List[str] = [thread_id.decode("utf-8") for thread_id in thread_ids]
         if order == "desc":
             sequence.reverse()
@@ -119,7 +139,9 @@ class RedisStore(Store[dict[str, Any]]):
         if not slice_ids:
             return Page(data=[], has_more=False, after=None)
 
-        metadata_values = await self._redis.mget([_metadata_key(thread_id) for thread_id in slice_ids])
+        metadata_values = await self._redis.mget(
+            [_metadata_key(user_id, thread_id) for thread_id in slice_ids]
+        )
         threads: List[ThreadMetadata] = []
         for raw in metadata_values:
             if raw is None:
@@ -134,19 +156,27 @@ class RedisStore(Store[dict[str, Any]]):
         )
 
     async def delete_thread(self, thread_id: str, context: dict[str, Any]) -> None:
-        items_list_key = _items_list_key(thread_id)
+        user_id = self._require_user_id(context)
+        items_list_key = _items_list_key(user_id, thread_id)
         item_ids = await self._redis.lrange(items_list_key, 0, -1)
         if item_ids:
-            await self._redis.delete(*[_item_key(thread_id, item_id.decode("utf-8")) for item_id in item_ids])
-        await self._redis.delete(items_list_key, _metadata_key(thread_id))
-        await self._redis.zrem(_THREAD_INDEX_KEY, thread_id)
+            await self._redis.delete(
+                *[
+                    _item_key(user_id, thread_id, item_id.decode("utf-8"))
+                    for item_id in item_ids
+                ]
+            )
+        await self._redis.delete(items_list_key, _metadata_key(user_id, thread_id))
+        await self._redis.zrem(_thread_index_key(user_id), thread_id)
 
-    async def _load_all_items(self, thread_id: str) -> List[ThreadItem]:
-        item_ids = await self._redis.lrange(_items_list_key(thread_id), 0, -1)
+    async def _load_all_items(self, user_id: str, thread_id: str) -> List[ThreadItem]:
+        item_ids = await self._redis.lrange(_items_list_key(user_id, thread_id), 0, -1)
         if not item_ids:
             return []
 
-        keys = [_item_key(thread_id, item_id.decode("utf-8")) for item_id in item_ids]
+        keys = [
+            _item_key(user_id, thread_id, item_id.decode("utf-8")) for item_id in item_ids
+        ]
         values = await self._redis.mget(keys)
         items: List[ThreadItem] = []
         for raw in values:
@@ -171,7 +201,8 @@ class RedisStore(Store[dict[str, Any]]):
         order: str,
         context: dict[str, Any],
     ) -> Page[ThreadItem]:
-        all_items = self._order_items(await self._load_all_items(thread_id), order)
+        user_id = self._require_user_id(context)
+        all_items = self._order_items(await self._load_all_items(user_id, thread_id), order)
         if after:
             index_map = {item.id: idx for idx, item in enumerate(all_items)}
             start = index_map.get(after, -1) + 1
@@ -191,29 +222,32 @@ class RedisStore(Store[dict[str, Any]]):
     async def add_thread_item(
         self, thread_id: str, item: ThreadItem, context: dict[str, Any]
     ) -> None:
-        if not await self._redis.exists(_metadata_key(thread_id)):
+        user_id = self._require_user_id(context)
+        if not await self._redis.exists(_metadata_key(user_id, thread_id)):
             metadata = ThreadMetadata(
                 id=thread_id,
                 created_at=datetime.now(timezone.utc),
             )
             await self.save_thread(metadata, context)
-        await self._write_item(thread_id, item, ensure_list=True)
+        await self._write_item(user_id, thread_id, item, ensure_list=True)
 
     async def save_item(self, thread_id: str, item: ThreadItem, context: dict[str, Any]) -> None:
-        await self._write_item(thread_id, item, ensure_list=False)
+        user_id = self._require_user_id(context)
+        await self._write_item(user_id, thread_id, item, ensure_list=False)
 
     async def _write_item(
         self,
+        user_id: str,
         thread_id: str,
         item: ThreadItem,
         ensure_list: bool = False,
     ) -> None:
         item_id = item.id
-        key = _item_key(thread_id, item_id)
+        key = _item_key(user_id, thread_id, item_id)
         encoded = self._dump_model(item)
         await self._redis.set(key, encoded)
 
-        list_key = _items_list_key(thread_id)
+        list_key = _items_list_key(user_id, thread_id)
         position = await self._redis.lpos(list_key, item_id)
         if position is None:
             await self._redis.rpush(list_key, item_id)
@@ -222,7 +256,8 @@ class RedisStore(Store[dict[str, Any]]):
             pass
 
     async def load_item(self, thread_id: str, item_id: str, context: dict[str, Any]) -> ThreadItem:
-        raw = await self._redis.get(_item_key(thread_id, item_id))
+        user_id = self._require_user_id(context)
+        raw = await self._redis.get(_item_key(user_id, thread_id, item_id))
         if raw is None:
             raise NotFoundError(f"Item {item_id} not found")
         item = self._loads_item(raw)
@@ -231,8 +266,9 @@ class RedisStore(Store[dict[str, Any]]):
     async def delete_thread_item(
         self, thread_id: str, item_id: str, context: dict[str, Any]
     ) -> None:
-        await self._redis.lrem(_items_list_key(thread_id), 0, item_id)
-        await self._redis.delete(_item_key(thread_id, item_id))
+        user_id = self._require_user_id(context)
+        await self._redis.lrem(_items_list_key(user_id, thread_id), 0, item_id)
+        await self._redis.delete(_item_key(user_id, thread_id, item_id))
 
     async def save_attachment(
         self,

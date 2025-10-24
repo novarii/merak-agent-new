@@ -41,6 +41,7 @@ typing-inspection==0.4.2
 types-requests==2.32.4.20250913
 
 # Utilities
+PyJWT==2.10.1
 tqdm==4.67.1
 jiter==0.11.1
 idna==3.11

@@ -1,7 +1,7 @@
 # Project Architecture – Merak Agent ChatKit Backend
 
 ## Overview
-- **Goal:** Provide a FastAPI backend that exposes Merak’s hiring agent over ChatKit so web clients can orchestrate multi-turn conversations and trigger the `search_agents` tool when a brief is ready.
+- **Goal:** Provide a FastAPI backend that exposes Merak’s hiring agent over ChatKit so authenticated web clients can orchestrate multi-turn conversations and trigger the `search_agents` tool when a brief is ready.
 - **Key Capabilities:**
   - Collect hiring requirements through the Merak agent prompt (`MERAK_AGENT_INSTRUCTIONS`).
   - Persist thread history using a Redis-backed store when configured, falling back to the in-memory `MemoryStore` for local-only scenarios.
@@ -18,7 +18,7 @@
   - Tool input is validated with a Pydantic model (`FunctionArgs`).
   - Queries OpenAI’s vector store (`client.vector_stores.search`) using filters derived from the gathered facets.
   - Returns results as JSON via `ToolOutputText` so the agent can summarise matches for the user.
-- **State management (`app/redis_store.py`, `app/memory_store.py`):** `RedisStore` provides a durable implementation of ChatKit’s `Store` interface using Redis lists and hashes; if Redis is unavailable, the in-memory `MemoryStore` fallback keeps demos running without persistence.
+- **State management (`app/redis_store.py`, `app/memory_store.py`):** `RedisStore` provides a durable implementation of ChatKit’s `Store` interface using Redis lists and hashes, scoped by Supabase `user_id`; if Redis is unavailable, the in-memory `MemoryStore` fallback keeps demos running without persistence while still segmenting state per user.
 
 ## Project Structure
 ```
@@ -44,7 +44,7 @@ requirements.txt         # Runtime dependencies (FastAPI, ChatKit, OpenAI Agents
 
 ## Request Flow
 1. Client sends ChatKit payloads to `POST /chatkit` (e.g., `threads.create`, `threads.add_user_message`).
-2. FastAPI forwards the raw body to `MerakAgentServer.process`, supplying `{ "request": Request }` as context.
+2. FastAPI forwards the raw body to `MerakAgentServer.process`, supplying `{ "request": Request, "user_id": SupabaseUser.id, "user": SupabaseUser }` as context.
 3. `ChatKitServer.process` validates the payload and, for streaming requests, invokes `MerakAgentServer.respond`.
 4. `respond` builds a `MerakAgentContext`, coalesces recent thread history, converts it via `ThreadItemConverter.to_agent_input`, and calls `Runner.run_streamed` with the Merak agent.
 5. As the agent reasons it may call `search_agents_tool`, which hits OpenAI’s vector store and returns structured results.
@@ -55,19 +55,20 @@ requirements.txt         # Runtime dependencies (FastAPI, ChatKit, OpenAI Agents
   - `OPENAI_API_KEY` (required)
   - `VECTOR_STORE_ID` (required)
   - `REDIS_URL` (optional; when unset, the server uses the in-memory fallback)
+  - Supabase auth config: `SUPABASE_JWKS_URL` (or `SUPABASE_JWT_SECRET` for local HS256 decoding), optional `SUPABASE_JWT_AUDIENCE`, `SUPABASE_JWT_ISSUER`
   - Optional logging flags: `DEBUG`, `LOG_LEVEL`
 - `.env` is read automatically; update `.env.example` when introducing new settings.
 - Redis 7+ is required for persistence; without it the server falls back to in-memory storage.
 
 ## Data & Persistence
-- **Threads / Items:** Persisted to Redis using per-thread hashes and lists; unsuitable for persistence only when Redis is missing, in which case the in-memory fallback mirrors the old behaviour.
+- **Threads / Items:** Persisted to Redis using per-user/per-thread hashes and lists (`chatkit:user:{user_id}:thread:{thread_id}:*`). The in-memory fallback mirrors this layout so each Supabase user sees only their own conversations.
 - **Attachments:** Not supported—`MerakAgentServer.to_message_content` raises `RuntimeError` if an attachment arrives.
 - **Vector Data:** Managed externally in the OpenAI vector store backing the `search_agents` tool.
 
 ## Operational Notes
 - Start the API with `uvicorn app.main:app --reload` after installing dependencies (`pip install -r requirements.txt`).
 - Run `redis-server` locally or `docker run --rm -p 6379:6379 redis:7` so `REDIS_URL=redis://localhost:6379/0` remains reachable. Without Redis the server logs a warning and keeps an in-memory store.
-- Because Redis persists state, chat threads survive reloads; if Redis is absent, the fallback clears state on restart.
+- Because Redis persists state, chat threads survive reloads; if Redis is absent, the fallback clears state on restart. All incoming requests must present a valid Supabase Bearer token so the backend can resolve `user_id` and look up the correct thread namespace.
 - The ChatKit converter now relies on historial context; if the converter fails, the server logs a fallback and the agent may lose context. Check the SOP for debugging guidance.
 
 ## Related Docs

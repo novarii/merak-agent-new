@@ -9,6 +9,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import Response, StreamingResponse
 from starlette.responses import JSONResponse
 
+from .auth.dependencies import SupabaseUser, get_current_user
 from .chat import (
     MerakAgentServer,
     create_chatkit_server,
@@ -36,10 +37,13 @@ async def shutdown_event() -> None:
 
 @app.post("/chatkit")
 async def chatkit_endpoint(
-    request: Request, server: MerakAgentServer = Depends(get_chatkit_server)
+    request: Request,
+    server: MerakAgentServer = Depends(get_chatkit_server),
+    user: SupabaseUser = Depends(get_current_user),
 ) -> Response:
     payload = await request.body()
-    result = await server.process(payload, {"request": request})
+    context = {"request": request, "user_id": user.id, "user": user}
+    result = await server.process(payload, context)
     if isinstance(result, StreamingResult):
         return StreamingResponse(result, media_type="text/event-stream")
     if hasattr(result, "json"):

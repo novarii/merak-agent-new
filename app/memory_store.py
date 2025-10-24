@@ -18,7 +18,7 @@ class MemoryStore(Store[dict[str, Any]]):
     """Simple in-memory store compatible with the ChatKit server interface."""
 
     def __init__(self) -> None:
-        self._threads: Dict[str, _ThreadState] = {}
+        self._threads: Dict[str, Dict[str, _ThreadState]] = {}
         # Attachments intentionally unsupported; use a real store that enforces auth.
 
     @staticmethod
@@ -34,20 +34,33 @@ class MemoryStore(Store[dict[str, Any]]):
         data.pop("items", None)
         return ThreadMetadata(**data).model_copy(deep=True)
 
+    @staticmethod
+    def _require_user_id(context: dict[str, Any]) -> str:
+        user_id = context.get("user_id")
+        if not user_id:
+            raise ValueError("MemoryStore requires 'user_id' in context.")
+        return str(user_id)
+
+    def _user_threads(self, user_id: str) -> Dict[str, _ThreadState]:
+        return self._threads.setdefault(user_id, {})
+
     # -- Thread metadata -------------------------------------------------
     async def load_thread(self, thread_id: str, context: dict[str, Any]) -> ThreadMetadata:
-        state = self._threads.get(thread_id)
+        user_id = self._require_user_id(context)
+        state = self._user_threads(user_id).get(thread_id)
         if not state:
             raise NotFoundError(f"Thread {thread_id} not found")
         return self._coerce_thread_metadata(state.thread)
 
     async def save_thread(self, thread: ThreadMetadata, context: dict[str, Any]) -> None:
+        user_id = self._require_user_id(context)
         metadata = self._coerce_thread_metadata(thread)
-        state = self._threads.get(thread.id)
+        threads = self._user_threads(user_id)
+        state = threads.get(thread.id)
         if state:
             state.thread = metadata
         else:
-            self._threads[thread.id] = _ThreadState(
+            threads[thread.id] = _ThreadState(
                 thread=metadata,
                 items=[],
             )
@@ -59,8 +72,10 @@ class MemoryStore(Store[dict[str, Any]]):
         order: str,
         context: dict[str, Any],
     ) -> Page[ThreadMetadata]:
+        user_id = self._require_user_id(context)
+        threads_map = self._user_threads(user_id)
         threads = sorted(
-            (self._coerce_thread_metadata(state.thread) for state in self._threads.values()),
+            (self._coerce_thread_metadata(state.thread) for state in threads_map.values()),
             key=lambda t: t.created_at or datetime.min,
             reverse=(order == "desc"),
         )
@@ -82,17 +97,18 @@ class MemoryStore(Store[dict[str, Any]]):
         )
 
     async def delete_thread(self, thread_id: str, context: dict[str, Any]) -> None:
-        self._threads.pop(thread_id, None)
+        user_id = self._require_user_id(context)
+        self._user_threads(user_id).pop(thread_id, None)
 
     # -- Thread items ----------------------------------------------------
-    def _items(self, thread_id: str) -> List[ThreadItem]:
-        state = self._threads.get(thread_id)
+    def _items(self, user_id: str, thread_id: str) -> List[ThreadItem]:
+        state = self._user_threads(user_id).get(thread_id)
         if state is None:
             state = _ThreadState(
                 thread=ThreadMetadata(id=thread_id, created_at=datetime.utcnow()),
                 items=[],
             )
-            self._threads[thread_id] = state
+            self._user_threads(user_id)[thread_id] = state
         return state.items
 
     async def load_thread_items(
@@ -103,7 +119,8 @@ class MemoryStore(Store[dict[str, Any]]):
         order: str,
         context: dict[str, Any],
     ) -> Page[ThreadItem]:
-        items = [item.model_copy(deep=True) for item in self._items(thread_id)]
+        user_id = self._require_user_id(context)
+        items = [item.model_copy(deep=True) for item in self._items(user_id, thread_id)]
         items.sort(
             key=lambda item: getattr(item, "created_at", datetime.utcnow()),
             reverse=(order == "desc"),
@@ -124,10 +141,12 @@ class MemoryStore(Store[dict[str, Any]]):
     async def add_thread_item(
         self, thread_id: str, item: ThreadItem, context: dict[str, Any]
     ) -> None:
-        self._items(thread_id).append(item.model_copy(deep=True))
+        user_id = self._require_user_id(context)
+        self._items(user_id, thread_id).append(item.model_copy(deep=True))
 
     async def save_item(self, thread_id: str, item: ThreadItem, context: dict[str, Any]) -> None:
-        items = self._items(thread_id)
+        user_id = self._require_user_id(context)
+        items = self._items(user_id, thread_id)
         for idx, existing in enumerate(items):
             if existing.id == item.id:
                 items[idx] = item.model_copy(deep=True)
@@ -135,7 +154,8 @@ class MemoryStore(Store[dict[str, Any]]):
         items.append(item.model_copy(deep=True))
 
     async def load_item(self, thread_id: str, item_id: str, context: dict[str, Any]) -> ThreadItem:
-        for item in self._items(thread_id):
+        user_id = self._require_user_id(context)
+        for item in self._items(user_id, thread_id):
             if item.id == item_id:
                 return item.model_copy(deep=True)
         raise NotFoundError(f"Item {item_id} not found")
@@ -143,8 +163,9 @@ class MemoryStore(Store[dict[str, Any]]):
     async def delete_thread_item(
         self, thread_id: str, item_id: str, context: dict[str, Any]
     ) -> None:
-        items = self._items(thread_id)
-        self._threads[thread_id].items = [item for item in items if item.id != item_id]
+        user_id = self._require_user_id(context)
+        items = self._items(user_id, thread_id)
+        self._user_threads(user_id)[thread_id].items = [item for item in items if item.id != item_id]
 
     # -- Files -----------------------------------------------------------
     # These methods are not currently used but required to be compatible with the Store interface.

@@ -147,7 +147,7 @@ def _assistant_message(thread_id: str, message_id: str, text: str) -> AssistantM
 async def test_save_and_list_threads() -> None:
     redis = FakeRedis()
     store = RedisStore(redis)
-    context: dict[str, Any] = {}
+    context: dict[str, Any] = {"user_id": "user_a"}
 
     metadata = _thread_metadata("thr_test")
     await store.save_thread(metadata, context)
@@ -164,7 +164,7 @@ async def test_save_and_list_threads() -> None:
 async def test_item_crud_flow() -> None:
     redis = FakeRedis()
     store = RedisStore(redis)
-    context: dict[str, Any] = {}
+    context: dict[str, Any] = {"user_id": "user_a"}
     thread_id = "thr_items"
 
     metadata = _thread_metadata(thread_id)
@@ -198,3 +198,32 @@ async def test_item_crud_flow() -> None:
     await store.delete_thread(thread_id, context)
     page_after_delete = await store.load_threads(limit=5, after=None, order="asc", context=context)
     assert page_after_delete.data == []
+
+
+@pytest.mark.asyncio
+async def test_user_isolation() -> None:
+    redis = FakeRedis()
+    store = RedisStore(redis)
+
+    context_a: dict[str, Any] = {"user_id": "alice"}
+    context_b: dict[str, Any] = {"user_id": "bob"}
+
+    thread_id = "thr_shared"
+
+    await store.save_thread(_thread_metadata(thread_id), context_a)
+    await store.save_thread(_thread_metadata(thread_id), context_b)
+
+    await store.add_thread_item(thread_id, _user_message(thread_id, "msg_a1", "Hey"), context_a)
+    await store.add_thread_item(thread_id, _user_message(thread_id, "msg_b1", "Hello"), context_b)
+
+    page_a = await store.load_thread_items(thread_id, None, 10, "asc", context_a)
+    page_b = await store.load_thread_items(thread_id, None, 10, "asc", context_b)
+
+    assert [item.id for item in page_a.data] == ["msg_a1"]
+    assert [item.id for item in page_b.data] == ["msg_b1"]
+
+    threads_a = await store.load_threads(limit=5, after=None, order="asc", context=context_a)
+    threads_b = await store.load_threads(limit=5, after=None, order="asc", context=context_b)
+
+    assert [thread.id for thread in threads_a.data] == [thread_id]
+    assert [thread.id for thread in threads_b.data] == [thread_id]

@@ -51,3 +51,4 @@
 - `.agent/System/project_architecture.md` — update to reflect Redis backing store and progress-event animation.
 - `.agent/Tasks/task-chatkit-client-tool-call-race.md` — background on the animation/tool-call refactor.
 - `app/memory_store.py` — reference for Store contract; should note the Redis replacement once work begins.
+- `.agent/Tasks/task-chatkit-multi-user-redis.md` — follow-on task covering per-user namespacing and Supabase-authenticated access.
