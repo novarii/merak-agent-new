@@ -56,6 +56,7 @@ requirements.txt         # Runtime dependencies (FastAPI, ChatKit, OpenAI Agents
   - `VECTOR_STORE_ID` (required)
   - `REDIS_URL` (optional; when unset, the server uses the in-memory fallback)
   - Supabase auth config: `SUPABASE_JWKS_URL` (or `SUPABASE_JWT_SECRET` for local HS256 decoding), optional `SUPABASE_JWT_AUDIENCE`, `SUPABASE_JWT_ISSUER`
+  - `CORS_ORIGINS` (optional, comma-delimited list of allowed frontend origins; defaults to wildcard with credentials disabled)
   - Optional logging flags: `DEBUG`, `LOG_LEVEL`
 - `.env` is read automatically; update `.env.example` when introducing new settings.
 - Redis 7+ is required for persistence; without it the server falls back to in-memory storage.

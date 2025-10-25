@@ -6,6 +6,7 @@ from typing import Any
 
 from chatkit.server import StreamingResult
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from starlette.responses import JSONResponse
 
@@ -14,8 +15,18 @@ from .chat import (
     MerakAgentServer,
     create_chatkit_server,
 )
+from .core.settings import settings
 
 app = FastAPI(title="MerakAgent API")
+
+cors_origins = settings.cors_origins or ["*"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_credentials=bool(settings.cors_origins),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 _chatkit_server: MerakAgentServer | None = create_chatkit_server()
 
