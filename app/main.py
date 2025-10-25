@@ -19,11 +19,20 @@ from .core.settings import settings
 
 app = FastAPI(title="MerakAgent API")
 
-cors_origins = settings.cors_origins or ["*"]
+def _parse_cors_origins(raw: str | None) -> list[str]:
+    if raw is None:
+        return []
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+cors_origins = _parse_cors_origins(settings.cors_origins)
+allow_credentials = bool(cors_origins) and "*" not in cors_origins
+if not cors_origins:
+    cors_origins = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
-    allow_credentials=bool(settings.cors_origins),
+    allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
