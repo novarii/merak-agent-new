@@ -70,6 +70,14 @@ async def chatkit_endpoint(
         return Response(content=result.json, media_type="application/json")
     return JSONResponse(result)
 
+
+app.add_api_route(
+    "/chatkit/",
+    chatkit_endpoint,
+    methods=["POST"],
+    include_in_schema=False,
+)
+
 @app.get("/health")
 async def health_check() -> dict[str, str]:
     return {"status": "healthy"}
