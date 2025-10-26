@@ -135,6 +135,9 @@ async def search_agents(ctx: RunContextWrapper[Any], args: str) -> ToolOutputTex
         query=parsed.query,
         max_num_results=max(5, parsed.max_results),
         filters=attribute_filter,
+        ranking_options={
+        "score_threshold": 0.4,
+        },
     )
 
     agent_ids = extract_agent_ids(results)
