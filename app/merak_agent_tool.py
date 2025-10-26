@@ -32,13 +32,7 @@ def build_attribute_filter(
     
     filters = []
     
-    # Filter by industries (if agent's industry is in the list)
-    if industries and len(industries) > 0:
-        filters.append({
-            "type": "in",
-            "key": "industry",
-            "value": industries
-        })
+    # Industry filtering disabled temporarily during testing.
     
     # Filter by agent types (if agent's type is in the list)
     if agent_types and len(agent_types) > 0:
